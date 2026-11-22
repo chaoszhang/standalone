@@ -1,7 +1,7 @@
 CXX      ?= g++
 CXXFLAGS ?= -O2 -std=c++20 -Wall -Wextra
 
-BINS = NJ limbNJ1.3 limbNJ1.3.1
+BINS = NJ limbNJ1.3 limbNJ1.3.1 gtree_dist
 
 all: $(BINS)
 
@@ -12,6 +12,9 @@ limbNJ1.3: limbNJ1.3.cpp limbNJ.hpp
 	$(CXX) $(CXXFLAGS) -o $@ $<
 
 limbNJ1.3.1: limbNJ1.3.1.cpp limbNJ.hpp
+	$(CXX) $(CXXFLAGS) -o $@ $<
+
+gtree_dist: gtree_dist.cpp
 	$(CXX) $(CXXFLAGS) -o $@ $<
 
 clean:

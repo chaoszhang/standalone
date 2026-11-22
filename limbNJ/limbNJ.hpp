@@ -16,6 +16,7 @@
 #include <cstdio>
 #include <cstdlib>
 #include <fstream>
+#include <functional>
 #include <queue>
 #include <string>
 #include <tuple>
@@ -29,6 +30,8 @@ static const double kInf = 1e300;
 
 struct Result {
     std::vector<std::vector<int>> clades;
+    std::vector<std::vector<int>> tree;   // 内部节点 -> 孩子节点（叶子 0..n-1）
+    int root = -1;
     double t_lf = 0, t_main = 0;
     bool ok = true;
     std::string why;
@@ -128,7 +131,8 @@ static Result solve_a1x(int n, const std::vector<double>& D0,
     std::vector<char> alive(n, 1);
     std::vector<double> c(n, 1.0), S(n, 0.0);
     std::vector<std::vector<int>> grp(n);
-    for (int i = 0; i < n; ++i) grp[i].assign(1, i);
+    std::vector<int> cur(n);                 // clade -> 当前树节点
+    for (int i = 0; i < n; ++i) { grp[i].assign(1, i); cur[i] = i; }
 
     int m = n;
     const int K = n - 2;
@@ -172,6 +176,12 @@ static Result solve_a1x(int n, const std::vector<double>& D0,
         ref(D, n, i, i) = 2.0 * Lnew;
         c[i] = cn;
         for (int x : grp[j]) grp[i].push_back(x);
+        // 拓扑：i、j 是 cherry，新父节点 u
+        {
+            int u = n + (int)R.tree.size();   // 内部节点用 n+idx，避免与叶 id 冲突
+            R.tree.push_back({cur[i], cur[j]});
+            cur[i] = u;
+        }
         alive[j] = 0;
         --m;
         if (m > 1) S[i] = recompute_S(i);   // 其余 S 在 claim4 下严格不变
@@ -253,6 +263,19 @@ static Result solve_a1x(int n, const std::vector<double>& D0,
             }
         }
     }
+
+    // 收尾：剩下两个 clade 连成一个根
+    {
+        int a = -1, b = -1;
+        for (int k = 0; k < n; ++k)
+            if (alive[k]) { if (a < 0) a = k; else if (b < 0) b = k; }
+        if (a >= 0 && b >= 0) {
+            R.root = n + (int)R.tree.size();
+            R.tree.push_back({cur[a], cur[b]});
+        } else if (a >= 0) {
+            R.root = cur[a];
+        }
+    }
     return R;
 }
 
@@ -264,7 +287,8 @@ static Result solve_nj(int n, const std::vector<double>& D0) {
 
     std::vector<char> alive(n, 1);
     std::vector<std::vector<int>> grp(n);
-    for (int i = 0; i < n; ++i) grp[i].assign(1, i);
+    std::vector<int> cur(n);
+    for (int i = 0; i < n; ++i) { grp[i].assign(1, i); cur[i] = i; }
 
     std::vector<double> r(n, 0.0);
     auto row_sum = [&](int a) {
@@ -298,12 +322,26 @@ static Result solve_nj(int n, const std::vector<double>& D0) {
         }
         ref(d, n, i, i) = 0.0;
         for (int x : grp[j]) grp[i].push_back(x);
+        {
+            int u = n + (int)R.tree.size();
+            R.tree.push_back({cur[i], cur[j]});
+            cur[i] = u;
+        }
         alive[j] = 0;
         --m;
         R.clades.push_back(grp[i]);
         if (m <= 2) break;
         for (int k = 0; k < n; ++k)
             if (alive[k]) r[k] = row_sum(k);
+    }
+    {
+        int a = -1, b = -1;
+        for (int k = 0; k < n; ++k)
+            if (alive[k]) { if (a < 0) a = k; else if (b < 0) b = k; }
+        if (a >= 0 && b >= 0) {
+            R.root = n + (int)R.tree.size();
+            R.tree.push_back({cur[a], cur[b]});
+        } else if (a >= 0) R.root = cur[a];
     }
     return R;
 }
@@ -327,25 +365,51 @@ static std::vector<std::string> to_splits(const Result& R, int n) {
     return out;
 }
 
-static bool read_matrix(const std::string& path, int& n, std::vector<double>& D) {
+// PHYLIP 风格：第一行 n，随后每行 "name<TAB>d0<TAB>d1..."
+static bool read_matrix(const std::string& path, int& n, std::vector<double>& D,
+                        std::vector<std::string>& names) {
     std::ifstream in(path);
     if (!in) return false;
     if (!(in >> n) || n < 3) return false;
+    std::string line;
+    std::getline(in, line);              // 吃掉行尾
+    names.assign(n, std::string());
     D.assign((size_t)n * n, 0.0);
-    for (int i = 0; i < n; ++i)
+    for (int i = 0; i < n; ++i) {
+        if (!(in >> names[i])) return false;
         for (int j = 0; j < n; ++j)
             if (!(in >> D[(size_t)i * n + j])) return false;
+    }
     return true;
+}
+
+// 无根 Newick：(A,B);
+static std::string to_newick(const Result& R, const std::vector<std::string>& names) {
+    int n = (int)names.size();
+    std::function<std::string(int)> rec = [&](int u) -> std::string {
+        if (u < n) return names[u];
+        const std::vector<int>& kids = R.tree[u - n];
+        std::string s = "(";
+        for (size_t k = 0; k < kids.size(); ++k) {
+            if (k) s += ',';
+            s += rec(kids[k]);
+        }
+        s += ")";
+        return s;
+    };
+    if (R.root < 0 || R.tree.empty()) return std::string();
+    return rec(R.root) + ";";
 }
 
 // ── 统一入口 ───────────────────────────────────────────────
 static int run(int argc, char** argv, Mode mode, const char* prog) {
-    std::string mat, out_path, lfmode = "pq";
+    std::string mat, out_path, lfmode = "pq", fmt = "newick";
     for (int a = 1; a < argc; ++a) {
         std::string s = argv[a];
-        if (s == "--matrix" && a + 1 < argc) mat = argv[++a];
-        else if (s == "--out" && a + 1 < argc) out_path = argv[++a];
+        if ((s == "--matrix" || s == "-i") && a + 1 < argc) mat = argv[++a];
+        else if ((s == "--out" || s == "-o") && a + 1 < argc) out_path = argv[++a];
         else if (s == "--lf" && a + 1 < argc) lfmode = argv[++a];
+        else if (s == "--format" && a + 1 < argc) fmt = argv[++a];
         else if (s == "-h" || s == "--help") {
             std::printf(
                 "用法: %s --matrix <文件> [--out <文件>] [--lf pq|min]\n"
@@ -358,7 +422,8 @@ static int run(int argc, char** argv, Mode mode, const char* prog) {
 
     int n = 0;
     std::vector<double> D;
-    if (!read_matrix(mat, n, D)) {
+    std::vector<std::string> names;
+    if (!read_matrix(mat, n, D, names)) {
         std::fprintf(stderr, "读取矩阵失败: %s\n", mat.c_str());
         return 2;
     }
@@ -381,15 +446,22 @@ static int run(int argc, char** argv, Mode mode, const char* prog) {
     }
 
     std::vector<std::string> sp = to_splits(R, n);
+    std::string outtext;
+    if (fmt == "splits") {
+        for (auto& t : sp) { outtext += t; outtext += '\n'; }
+    } else {
+        outtext = to_newick(R, names);
+        if (!outtext.empty()) outtext += '\n';
+    }
     std::fprintf(stderr, "%s n=%d  t_lf=%.3fs  t_main=%.3fs  splits=%zu%s%s\n",
                  prog, n, R.t_lf, R.t_main, sp.size(),
                  R.ok ? "" : "  [失败] ", R.why.c_str());
 
     if (out_path.empty()) {
-        for (auto& s : sp) std::printf("%s\n", s.c_str());
+        std::fputs(outtext.c_str(), stdout);
     } else {
         std::ofstream f(out_path);
-        for (auto& s : sp) f << s << '\n';
+        f << outtext;
     }
     return R.ok ? 0 : 1;
 }
